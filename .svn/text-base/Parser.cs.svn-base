@@ -1,0 +1,790 @@
+﻿using System;
+using System.Text;
+using System.IO;
+using System.Collections;
+
+namespace SimpleInterpreter
+{
+    public class Parser : TokenTypes
+    {
+        private TokenBuffer input;
+        private Hashtable variables; //hashtable for symbols
+        private Stack stk;
+        private object current;
+        private bool ifExit, exitOk, beginOk;
+        private StreamWriter streamOut;
+        public int lineBreakcount = 0;
+
+        public Parser(Lexer t)
+        {
+            variables = new Hashtable(8192);
+            stk = new Stack();
+            input = new TokenBuffer(t, 2); //Parse two tokens at a time
+            streamOut = null;
+        }
+
+        public Parser(TokenBuffer t)
+        {
+            variables = new Hashtable(8192);
+            stk = new Stack();
+            input = t;
+            streamOut = null;
+        }
+
+        private void setPos(int i)
+        {
+            input.setPos(i);
+            for (int ii = 0; ii < 2; ii++)
+            {
+                consume();
+            }
+        }
+
+        private int getPos() { return input.getPos(); }
+        private int tokenValue(int i) { return input.tokenValue(i).Type; }
+        private Token tokenAssignment(int i) { return input.tokenValue(i); }
+        private void consume() { input.consume(); }
+        private void discard(int c) { consume(); }
+
+        public object Evaluate()
+        {
+            if (tokenValue(1) == TOKEN_BEGIN) //Start program or function
+            { beginOk = true; discard(TOKEN_BEGIN); }
+
+            while (tokenValue(1) != TOKEN_EOF && beginOk == true)
+            {
+                if (tokenValue(1) == TOKEN_ENDLINE)
+                {
+                   discard(TOKEN_ENDLINE); lineBreakcount++; 
+                }
+                else if (tokenValue(1) == TOKEN_IF)
+                    parseIf();
+                else if (tokenValue(1) == TOKEN_COMMENT) //Comment symbol is #
+                {
+                    string cmt = tokenAssignment(1).Text;
+                    discard(TOKEN_COMMENT);
+                }
+                else if (tokenValue(1) == TOKEN_PRINTLN) //TODO: Instead of checking for " to finish function use end of line to terminate, than parse and use , to delimit between strings and literals
+                    println();
+                else if (tokenValue(1) == TOKEN_PRINT)
+                    print();
+                else if (tokenValue(1) == TOKEN_INTEGER) //TODO: || if it equals other operators initialize them
+                    initializeVariable();
+                else if (tokenValue(1) == TOKEN_READ && tokenValue(2) == TOKEN_IDENTIFIER)
+                    readIn();
+                else if (tokenValue(1) == TOKEN_LET && tokenValue(2) == TOKEN_IDENTIFIER)
+                    assignVariable();
+                else if (tokenValue(1) == TOKEN_IDENTIFIER && tokenValue(2) == TOKEN_EQUALS)
+                    assignVariable();
+                else if (tokenValue(1) == TOKEN_IDENTIFIER && tokenValue(2) == TOKEN_LBRACK)
+                    assignArray();
+                else if (tokenValue(1) == TOKEN_IDENTIFIER && tokenValue(2) == TOKEN_LPAREN)
+                {
+                    callFunc(); //TODO: use this in conjuction with begin??
+                    discard(tokenValue(2));
+                }
+                else if (tokenValue(1) == TOKEN_DEFARRAY) //TODO: Define array
+                    defArray();
+                else if (tokenValue(1) == TOKEN_WHILE) //TODO: While using do
+                    parseWhile();
+                else if (tokenValue(1) == TOKEN_EWHILE) //End While
+                    break;
+                else if (tokenValue(1) == TOKEN_FOR) //TODO: For uses next
+                    parseFor();
+                else if (tokenValue(1) == TOKEN_EXIT) //EXIT used for exiting from IF statement, set ifExcit to true
+                {
+                    ifExit = true;
+                    break;
+                }
+                else if (tokenValue(1) == TOKEN_NEXT) //TODO: Use as then
+                    break;
+
+                else if (tokenValue(1) == TOKEN_END ) //End program or function
+                {
+                    discard(TOKEN_END);
+                    if(tokenValue(1) == TOKEN_ENDLINE && tokenValue(2) == TOKEN_EOF)
+                    { exitOk = true; }
+                }            
+                else if (tokenValue(1) == TOKEN_EDEFFUNC) //TODO: merge with END instead of soley ending functions
+                    break;
+                else
+                {
+                    Expression();
+                    discard(tokenValue(2));
+                }
+            }
+            
+            if (beginOk == false)
+                throw new Exception("Missing BEGIN token");
+            else if (exitOk == false)
+                throw new Exception("Missing END token");
+            else
+                return current;
+        }
+
+        #region parsing
+        void parseFor() //For Loop
+        {
+            int retPos;
+            int depth;
+            string nameVar;
+            discard(TOKEN_FOR);
+            nameVar = tokenAssignment(1).Text;
+            assignVariable();
+            int iFor = Int32.Parse(current.ToString());
+            retPos = getPos();   // save retval
+            discard(TOKEN_TO);
+            Expression();
+            int iTo = Int32.Parse(current.ToString());
+            while (iFor <= iTo)
+            {
+                discard(tokenValue(1));
+                if (tokenValue(1) == TOKEN_ENDLINE)
+                    discard(TOKEN_ENDLINE);
+                Evaluate();
+                if (ifExit)
+                {
+                    ifExit = false;
+                    break;
+                }
+                // return to begin	
+                setPos(retPos);
+                iFor++;
+                setVariable(nameVar, (object)iFor, null);
+            }
+            // skip body to next
+            depth = 1;
+            do
+            {
+                discard(tokenValue(2));
+                if (tokenValue(1) == TOKEN_FOR) depth++;
+                if (tokenValue(1) == TOKEN_NEXT) depth--;
+            } while (depth > 0);
+            discard(tokenValue(2));
+        }
+
+        void parseWhile() //While Loop
+        {
+            int depth;
+            int retPos;
+
+            retPos = getPos();
+            discard(TOKEN_WHILE);
+            Expression();
+            bool dowhile = bool.Parse(current.ToString());
+            while (dowhile)
+            {
+                discard(tokenValue(2));
+                Evaluate();
+                if (ifExit)
+                {
+                    ifExit = false;
+                    break;
+                }
+                setPos(retPos);
+                Expression();
+                dowhile = bool.Parse(current.ToString());
+            }
+            // skip body to endwhile
+            depth = 1;
+            do
+            {
+                discard(tokenValue(2));
+                if (tokenValue(1) == TOKEN_WHILE) depth++;
+                if (tokenValue(1) == TOKEN_EWHILE) depth--;
+            } while (depth > 0);
+            discard(tokenValue(2));
+        }
+
+        void parseIf() //If Statement
+        {
+            discard(TOKEN_IF);
+            Expression();
+            bool doIf = bool.Parse(current.ToString());
+            discard(tokenValue(2));
+
+            if (tokenValue(1) == TOKEN_THEN)
+            {
+                discard(TOKEN_THEN);
+            }
+            else
+                throw new Exception("Missing THEN statement");
+
+            if (doIf) //If statement is true, execute statement
+            {
+                if (tokenValue(1) == TOKEN_ENDLINE)
+                { discard(TOKEN_ENDLINE); lineBreakcount++; }
+                Evaluate();
+            }
+            else //If statement is false, skip statement
+            {
+                while (tokenValue(2) != TOKEN_ENDLINE)
+                {
+                    discard(tokenValue(1)); //discard all tokens till next linebreak
+                }
+                { discard(TOKEN_ENDLINE); lineBreakcount++; }//discard linebreak
+            }
+            discard(tokenValue(1));
+        }
+        #endregion
+        #region arrays
+        void assignArray()
+        {
+            string aname = tokenAssignment(1).Text;
+            discard(TOKEN_IDENTIFIER);
+            discard(TOKEN_LBRACK);
+            Expression();
+            discard(tokenValue(2));
+            object ind = current;
+            discard(TOKEN_RBRACK);
+            discard(TOKEN_EQUALS);
+            Expression();
+            object value = current;
+            setVariable(aname, value, ind);
+            // discard next
+            discard(tokenValue(2));
+        }
+
+        void defArray()
+        {
+            discard(TOKEN_DEFARRAY);
+            string aname = tokenAssignment(1).Text;
+            discard(TOKEN_IDENTIFIER);
+            discard(TOKEN_LBRACK);
+            Expression();
+            discard(TOKEN_RBRACK);
+            ArrayList value = new ArrayList();
+            // setup ini value for array
+            for (int i = 0; i < (int)current; i++)
+            {
+                value.Add(null);
+            }
+            addVariable(aname, value);
+            // discard next
+            discard(tokenValue(2));
+        }
+
+        #endregion
+
+        #region factoring
+
+        void SignedFactor()
+        {
+            if (tokenValue(1) == TOKEN_MINUS)
+            {
+                current = (int)0; //assign current as 0
+                push(current);
+                Subtract(); //Negate value
+            }
+            else if (tokenValue(1) == TOKEN_NOT)
+            {
+                current = (bool)false; //current is false
+                push(current);
+                Not();
+            }
+            else Factor();
+        }
+
+        void Factor()   //factor operations
+        {
+            if (tokenValue(1) == TOKEN_LPAREN)
+            {
+                discard(TOKEN_LPAREN);
+                Expression();
+                discard(TOKEN_RPAREN);
+            }
+            else if (tokenValue(1) == TOKEN_IDENTIFIER)
+            {
+                if (tokenValue(2) == TOKEN_LBRACK)
+                {
+                    string name = tokenAssignment(1).Text;
+                    discard(TOKEN_IDENTIFIER);
+                    discard(TOKEN_LBRACK);
+                    Expression();
+                    discard(TOKEN_RBRACK);
+                    current = getVariable(name, current);
+                }
+                else if (tokenValue(2) == TOKEN_LPAREN)
+                {
+                    current = callFunc();
+                }
+                else current = getVariable(tokenAssignment(1).Text, null);
+            }
+            else if (tokenValue(1) == TOKEN_DOUBLE) current = Double.Parse(tokenAssignment(1).Text);
+            else if (tokenValue(1) == TOKEN_INTEGER) current = Int32.Parse(tokenAssignment(1).Text);
+            else if (tokenValue(1) == TOKEN_BOOLEAN) current = bool.Parse(tokenAssignment(1).Text);
+            else if (tokenValue(1) == TOKEN_STRING) current = tokenAssignment(1).Text;
+            else throw new Exception((tokenValue(1)).ToString() + " type is undefined ");
+        }
+        #endregion
+        #region arithmetic
+
+        void FirstOrderOp()
+        {
+            while (tokenValue(2) == TOKEN_MULT || tokenValue(2) == TOKEN_DIV)
+            {
+                push(current);
+                if (tokenValue(2) == TOKEN_MULT) Multiply();
+                else if (tokenValue(2) == TOKEN_DIV) Divide();
+            }
+        }
+
+        void Multiply()
+        {
+            Object old;
+            discard(TOKEN_MULT);
+            discard(tokenValue(2));
+            Factor();
+            old = pop();
+            if ((current is int) && (old is int)) current = (int)old * (int)current;
+            else if ((current is int) && (old is double)) current = (double)old * (int)current;
+            else if ((current is double) && (old is int)) current = (int)old * (double)current;
+            else if ((current is double) && (old is double)) current = (double)old * (double)current;
+        }
+
+        void Divide()
+        {
+            Object old;
+            discard(TOKEN_DIV);
+            discard(tokenValue(2));
+            Factor();
+            old = pop();
+            if ((current is int) && (old is int)) current = (int)old / (int)current;
+            else if ((current is int) && (old is double)) current = (double)old / (int)current;
+            else if ((current is double) && (old is int)) current = (int)old / (double)current;
+            else if ((current is double) && (old is double)) current = (double)old / (double)current;
+        }
+
+        void SecondOrderOp()
+        {
+            while (tokenValue(2) == TOKEN_PLUS || tokenValue(2) == TOKEN_MINUS)
+            {
+                push(current);
+                if (tokenValue(2) == TOKEN_PLUS) Add();
+                else if (tokenValue(2) == TOKEN_MINUS) Subtract();
+            }
+        }
+
+        void Add()
+        {
+            Object old;
+            discard(TOKEN_PLUS);
+            discard(tokenValue(2));
+            Factor(); FirstOrderOp();
+            old = pop();
+            if ((current is int) && (old is int)) current = (int)old + (int)current;
+            else if ((current is int) && (old is double)) current = (double)old + (int)current;
+            else if ((current is double) && (old is int)) current = (int)old + (double)current;
+            else if ((current is double) && (old is double)) current = (double)old + (double)current;
+            else if ((current is string) && (old is string)) current = (string)old + (string)current;
+        }
+
+        void Subtract()
+        {
+            Object old;
+            if (tokenValue(2) == TOKEN_MINUS) discard(TOKEN_MINUS);
+            discard(tokenValue(2));
+            Factor(); FirstOrderOp();
+            old = pop();
+            if ((current is int) && (old is int)) current = (int)old - (int)current;
+            else if ((current is int) && (old is double)) current = (double)old - (int)current;
+            else if ((current is double) && (old is int)) current = (int)old - (double)current;
+            else if ((current is double) && (old is double)) current = (double)old - (double)current;
+        }
+
+
+        void RelationalOp()
+        {
+            while (tokenValue(2) == TOKEN_GREATER || tokenValue(2) == TOKEN_GREATEREQ ||
+                   tokenValue(2) == TOKEN_LESS || tokenValue(2) == TOKEN_LESSEQ ||
+                    tokenValue(2) == TOKEN_EQUALS || tokenValue(2) == TOKEN_NEQUALS)
+            {
+                push(current);
+                if (tokenValue(2) == TOKEN_GREATER) Greater();
+                else if (tokenValue(2) == TOKEN_GREATEREQ) GreaterEq();
+                else if (tokenValue(2) == TOKEN_LESS) Less();
+                else if (tokenValue(2) == TOKEN_LESSEQ) LessEq();
+                else if (tokenValue(2) == TOKEN_EQUALS) Equals();
+                //else if (tokenValue(2) == TOKEN_NEQUALS) NEquals();
+                else NEquals();
+            }
+        }
+
+        void Greater()
+        {
+            Object old;
+            discard(TOKEN_GREATER);
+            discard(tokenValue(2));
+            SignedFactor(); FirstOrderOp(); SecondOrderOp();
+            old = pop();
+            if ((current is int) && (old is int)) current = (int)old > (int)current;
+            else if ((current is int) && (old is double)) current = (double)old > (int)current;
+            else if ((current is double) && (old is int)) current = (int)old > (double)current;
+            else if ((current is double) && (old is double)) current = (double)old > (double)current;
+        }
+
+        void GreaterEq()
+        {
+            Object old;
+            discard(TOKEN_GREATEREQ);
+            discard(tokenValue(2));
+            SignedFactor(); FirstOrderOp(); SecondOrderOp();
+            old = pop();
+            if ((current is int) && (old is int)) current = (int)old >= (int)current;
+            else if ((current is int) && (old is double)) current = (double)old >= (int)current;
+            else if ((current is double) && (old is int)) current = (int)old >= (double)current;
+            else if ((current is double) && (old is double)) current = (double)old >= (double)current;
+
+        }
+
+        void Less()
+        {
+            Object old;
+            discard(TOKEN_LESS);
+            discard(tokenValue(2));
+            SignedFactor(); FirstOrderOp(); SecondOrderOp();
+            old = pop();
+            if ((current is int) && (old is int)) current = (int)old <= (int)current;
+            else if ((current is int) && (old is double)) current = (double)old <= (int)current;
+            else if ((current is double) && (old is int)) current = (int)old <= (double)current;
+            else if ((current is double) && (old is double)) current = (double)old <= (double)current;
+
+        }
+
+        void LessEq()
+        {
+            Object old;
+            discard(TOKEN_LESSEQ);
+            discard(tokenValue(2));
+            SignedFactor(); FirstOrderOp(); SecondOrderOp();
+            old = pop();
+            if ((current is int) && (old is int)) current = (int)old <= (int)current;
+            else if ((current is int) && (old is double)) current = (double)old <= (int)current;
+            else if ((current is double) && (old is int)) current = (int)old <= (double)current;
+            else if ((current is double) && (old is double)) current = (double)old <= (double)current;
+        }
+
+        void Equals()
+        {
+            Object old;
+            discard(TOKEN_EQUALS);
+            discard(tokenValue(2));
+            SignedFactor(); FirstOrderOp(); SecondOrderOp();
+            old = pop();
+            if ((current is int) && (old is int)) current = (int)old == (int)current;
+            else if ((current is int) && (old is double)) current = (double)old == (int)current;
+            else if ((current is double) && (old is int)) current = (int)old == (double)current;
+            else if ((current is double) && (old is double)) current = (double)old == (double)current;
+            else if ((current is bool) && (old is bool)) current = (bool)old == (bool)current;
+        }
+
+        void NEquals()
+        {
+            Object old;
+            discard(TOKEN_NEQUALS);
+            discard(tokenValue(2));
+            SignedFactor(); FirstOrderOp(); SecondOrderOp();
+            old = pop();
+            if ((current is int) && (old is int)) current = (int)old != (int)current;
+            else if ((current is int) && (old is double)) current = (double)old != (int)current;
+            else if ((current is double) && (old is int)) current = (int)old != (double)current;
+            else if ((current is double) && (old is double)) current = (double)old != (double)current;
+            else if ((current is bool) && (old is bool)) current = (bool)old != (bool)current;
+        }
+        #endregion
+
+        #region booleanOps
+        void BooleanOp()
+        {
+            while (tokenValue(2) == TOKEN_AND || tokenValue(2) == TOKEN_OR || tokenValue(2) == TOKEN_NOT)
+            {
+                push(current);
+                if (tokenValue(2) == TOKEN_AND) And();
+                else if (tokenValue(2) == TOKEN_OR) Or();
+                else if (tokenValue(2) == TOKEN_NOT) Not();
+            }
+        }
+
+        void And()
+        {
+            Object old;
+            discard(TOKEN_AND);
+            discard(tokenValue(2));
+            SignedFactor(); FirstOrderOp(); SecondOrderOp(); RelationalOp();
+            old = pop();
+            if ((current is bool) && (old is bool)) current = (bool)old && (bool)current;
+        }
+
+        void Or()
+        {
+            Object old;
+            discard(TOKEN_OR);
+            discard(tokenValue(2));
+            SignedFactor(); FirstOrderOp(); SecondOrderOp(); RelationalOp();
+            old = pop();
+            if ((current is bool) && (old is bool)) current = (bool)old || (bool)current;
+        }
+
+        void Not()
+        {
+            Object old;
+            if (tokenValue(2) == TOKEN_NOT) discard(TOKEN_NOT);
+            discard(tokenValue(2));
+            SignedFactor(); FirstOrderOp(); SecondOrderOp(); RelationalOp();
+            old = pop();
+            if (current is bool) current = !(bool)current;
+        }
+        #endregion
+
+        void readIn()
+        {
+            String name = tokenAssignment(2).Text;
+            discard(TOKEN_READ);
+            discard(TOKEN_IDENTIFIER);
+            Object value = Convert.ToInt32(Console.ReadLine());
+
+            Console.Clear();
+            setVariable(name, value, null);
+        }
+
+        void Expression() //Evaluate which type of expression is being parsed
+        {
+            SignedFactor();
+            FirstOrderOp();
+            SecondOrderOp();
+            RelationalOp();
+            BooleanOp();
+        }
+
+        void assignVariable()
+        {
+            string name = tokenAssignment(2).Text;
+            discard(TOKEN_LET);
+            discard(TOKEN_IDENTIFIER);
+            if (tokenValue(1) == TOKEN_EQUALS)
+                discard(tokenValue(1));
+            Expression(); //value of object variable determined by expression
+            object value = current;
+
+            setVariable(name, value, null);
+            discard(tokenValue(2));
+        }
+
+        void initializeVariable()
+        {
+            string name = tokenAssignment(2).Text;
+            discard(tokenValue(1));    //TODO: Values are currently autoboxed into objects, so types are irrelevant, may need to be fixed
+            discard(TOKEN_IDENTIFIER);
+
+            if (name.Length > 32)
+            { throw new Exception("IDENTIFIER may not exceed 32 characters in length"); }
+            else
+                variables.Add(name, null);
+
+            while (tokenValue(1) == TOKEN_COMMA) //if there is a COMMA initialize next variable
+            {
+                discard(TOKEN_COMMA);
+                name = tokenAssignment(1).Text;
+                discard(TOKEN_IDENTIFIER);
+                if (name.Length > 32)
+                { throw new Exception("IDENTIFIER may not exceed 32 characters in length"); }
+                else
+                    variables.Add(name, null);
+            }
+        }
+
+        private object getVariable(string name, object index)
+        {
+            if (name.IndexOf('.') > 0)
+            {
+                string[] s = name.Split(new char[] { '.' });
+            }
+
+            if (variables.ContainsKey(name))
+            {
+                if (index == null)
+                { return variables[name]; }
+                else
+                    return ((ArrayList)variables[name])[(int)index];
+            }
+            else throw new Exception("Undeclared identifier: " + name); //Hoffman required
+        }
+
+        public void addVariable(string name, object value)
+        {
+            if (variables.ContainsKey(name))
+                throw new Exception("Variabled already declared: " + name);
+            else
+                variables.Add(name, value);
+        }
+
+        private void setVariable(String name, object val, object index)
+        {
+            if (name.IndexOf('.') > 0)
+            {
+                string[] s = name.Split(new char[] { '.' });
+                return;
+            }
+            if (index == null)
+            {
+                if (hasVariable(name)) variables[name] = val;
+                else addVariable(name, val);
+            }
+            else
+                if (hasVariable(name)) ((ArrayList)variables[name])[(int)index] = val;
+        }
+
+        private bool hasVariable(String name)
+        {
+            return variables.ContainsKey(name);
+        }
+
+        void aadd(ArrayList name, object val) //Add name to the array
+        {
+            name.Add(val);
+        }
+
+        object alen(ArrayList name) //Get array size
+        {
+            return name.Count;
+        }
+
+        void push(object o)
+        {
+            stk.Push(o);
+        }
+
+        object pop()
+        {
+            return stk.Pop();
+        }
+
+        void println()
+        {
+            if (tokenValue(2) == TOKEN_STRING || tokenValue(2) == TOKEN_IDENTIFIER)
+            {
+                discard(tokenValue(1));
+                Expression();
+                String temp = Convert.ToString(current);
+
+                while (tokenValue(2) == TOKEN_COMMA)
+                {
+                    discard(TOKEN_IDENTIFIER);
+                    discard(TOKEN_COMMA);
+                    Expression();
+                    temp += current;
+                }
+
+                if (temp.Length > 80)
+                { throw new Exception("String values may not exceed 80 characters"); }
+                if (streamOut == null) Console.WriteLine("{0}", temp); //TODO: CHECK THAT ALL ASCII CHARACTER VALUES ARE WITHIN THE DECIMAL RANGE OF 32 - 126, or else throw exception
+                else streamOut.WriteLine("{0}", temp);
+            }
+            else //Else it is an empty string
+            {
+                discard(tokenValue(1));
+                Console.WriteLine();
+            }
+        }
+
+        void print()
+        {
+            discard(tokenValue(1));
+            Expression();
+            String temp = Convert.ToString(current);
+
+            while (tokenValue(2) == TOKEN_COMMA)
+            {
+                discard(TOKEN_IDENTIFIER);
+                discard(TOKEN_COMMA);
+                Expression();
+                temp += current;
+            }
+
+            if (temp.Length > 80)
+            { throw new Exception("String values may not exceed 80 characters"); }
+            if (streamOut == null) Console.WriteLine("{0}", temp);
+            else streamOut.Write("{0}", temp);
+        }
+
+        object callFunc()
+        {
+            ArrayList fparams = new ArrayList();
+            string fname = tokenAssignment(1).Text;
+            int retPos = 0;
+            object retval = null;
+            //parse arguments
+            discard(TOKEN_LPAREN);
+            while (tokenValue(2) != TOKEN_RPAREN)
+            {
+                discard(tokenValue(2));
+                if (tokenValue(1) != TOKEN_COMMA)
+                {
+                    Expression();
+                    fparams.Add(current);
+                }
+            }
+            string fnameup = fname.ToUpper();
+
+            if (fnameup.Equals("AADD")) //Add to the array
+            {
+                aadd((ArrayList)fparams[0], fparams[1]);
+                discard(tokenValue(2));
+            }
+            else if (fnameup.Equals("ALEN")) //get size of array
+            {
+                retval = alen((ArrayList)fparams[0]);
+                discard(tokenValue(2));
+
+            }
+            else
+            {// save call point
+                retPos = getPos();
+                discard(tokenValue(2));
+                // find function define
+                for (; ; )
+                {
+                    if (tokenValue(1) == TOKEN_DEFFUNC)
+                    {
+                        discard(tokenValue(2));
+                        if (tokenAssignment(1).Text == fname)
+                        {// save variable stack in stack
+                            Hashtable locals = (Hashtable)this.variables.Clone();
+                            this.variables.Clear();
+                            int ip = 0;
+                            discard(TOKEN_LPAREN);
+                            while (tokenValue(2) != TOKEN_RPAREN)
+                            {// fill variables
+                                discard(tokenValue(2));
+                                if (tokenValue(1) != TOKEN_COMMA) addVariable(tokenAssignment(1).Text, fparams[ip++]);
+                            }
+                            discard(TOKEN_RPAREN);
+                            discard(tokenValue(2));
+                            Evaluate();
+                            // analyze return code
+                            if (tokenValue(2) == TOKEN_LPAREN)
+                            { // something return
+                                discard(TOKEN_LPAREN);
+                                Expression();
+                                retval = (object)current;
+                            }
+                            // restore stack
+                            this.variables.Clear();
+                            this.variables = (Hashtable)locals.Clone();
+                            locals.Clear();
+                            // return
+                            setPos(retPos);
+                            break;
+                        }
+                    }
+                    else discard(tokenValue(2));
+                    if (tokenValue(1) == TOKEN_EOF)
+                    {
+                        throw new Exception(" Return not found. End Of file. ");
+                    }
+                }
+            }
+            return retval; //if name.Equals 
+        }
+    }
+}

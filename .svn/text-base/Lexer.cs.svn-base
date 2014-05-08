@@ -1,0 +1,325 @@
+﻿using System;
+using System.Text;
+using System.IO;
+
+namespace SimpleInterpreter
+{
+   public class Lexer : TokenTypes
+   {
+      private CharBuffer input;
+
+      public Lexer(StreamReader f)
+      {
+         input = new CharBuffer(f, 1);
+      }
+
+      public Lexer(string s)
+      {
+         input = new CharBuffer(s, 1);
+      }
+
+      private int curChar(int i) { return input.curChar(i); }
+      private void consume() { input.consume(); }
+      private void match(int c) { consume(); }
+
+      public int getPos() { return input.getPos(); }
+      public void setPos(int i) { input.setPos(i); }
+
+      public Token getToken()
+      {
+         Token retval;
+         for (; ; )
+         {
+            retval = null;
+            //int val = Convert.ToInt32(curChar(1));
+            //if (val < 32 || val > 126)
+            //   throw new Exception("Character out of acceptable ASCII range");
+
+            if (curChar(1) == ' ' || curChar(1) == '\t' || curChar(1) == '\n')
+            {
+               consume(); //Consume whitespace
+            }
+            else if (char.IsLetter((char)curChar(1)))
+            { retval = identifier(); } //char is identifier
+            else if (char.IsNumber((char)curChar(1)))
+            { retval = number(); } //Char is a number 
+            else if (curChar(1) == '"') //else char is a special symbol below
+            { retval = tstring(); }
+            else if (curChar(1) == '#')
+            { retval = comment(); }
+            else if (curChar(1) == '!')
+            { retval = not(); }
+            else if (curChar(1) == '>')
+            { retval = greater(); }
+            else if (curChar(1) == '<')
+            { retval = less(); }
+            else if (curChar(1) == '=')
+            { consume(); retval = new Token(TOKEN_EQUALS, "="); }
+            else if (curChar(1) == '+')
+            { consume(); retval = new Token(TOKEN_PLUS, "+"); }
+            else if (curChar(1) == '-')
+            { consume(); retval = new Token(TOKEN_MINUS, "-"); }
+            else if (curChar(1) == '*')
+            { consume(); retval = new Token(TOKEN_MULT, "*"); }
+            else if (curChar(1) == '/')
+            { consume(); retval = new Token(TOKEN_DIV, "/"); }
+            else if (curChar(1) == '[')
+            { consume(); retval = new Token(TOKEN_LBRACK, "["); }
+            else if (curChar(1) == ']')
+            { consume(); retval = new Token(TOKEN_RBRACK, "]"); }
+            else if (curChar(1) == '(')
+            { consume(); retval = new Token(TOKEN_LPAREN, "("); }
+            else if (curChar(1) == ')')
+            { consume(); retval = new Token(TOKEN_RPAREN, ")"); }
+            else if (curChar(1) == ',')
+            { consume(); retval = new Token(TOKEN_COMMA, ","); }
+            else if (curChar(1) == '\r')
+            { consume(); retval = new Token(TOKEN_ENDLINE, "\r"); }
+            else if (curChar(1) == -1)
+            { consume(); retval = new Token(TOKEN_EOF, "<eof>"); }
+            else consume();
+            if (retval != null) return retval;
+         }
+      }
+
+      Token identifier()
+      {
+         StringBuilder s = new StringBuilder();
+         while (char.IsLetter((char)curChar(1)) || char.IsNumber((char)curChar(1))
+                                   || (char)curChar(1) == '_'
+                                   || (char)curChar(1) == '.')
+         {
+            s.Append((char)curChar(1)); //if char is a letter append to a string
+            consume();             //than consume from input
+         }
+         string id = s.ToString(); //convert to string
+
+         string idup = id.ToUpper(); //convert to uppercase
+         if (idup.Equals("TRUE") || idup.Equals("FALSE"))
+            return new Token(TOKEN_BOOLEAN, id);
+         else if (idup.Equals("AND"))
+            return new Token(TOKEN_AND, "AND");
+         else if (idup.Equals("OR"))
+            return new Token(TOKEN_OR, "OR");
+         else if (idup.Equals("IF"))
+            return new Token(TOKEN_IF, "IF");
+         else if (idup.Equals("THEN"))
+            return new Token(TOKEN_THEN, "THEN");
+         else if (idup.Equals("ELSE"))
+            return new Token(TOKEN_ELSE, "ELSE");
+         else if (idup.Equals("ENDIF"))
+            return new Token(TOKEN_ENDIF, "ENDIF");
+         else if (idup.Equals("WHILE"))
+            return new Token(TOKEN_WHILE, "WHILE");
+         else if (idup.Equals("ENDWHILE"))
+            return new Token(TOKEN_EWHILE, "ENDWHILE");
+         else if (idup.Equals("RETURN"))
+            return new Token(TOKEN_EDEFFUNC, "RETURN"); //return for function
+         else if (idup.Equals("DECLARE"))
+            return new Token(TOKEN_DEFARRAY, "DECLARE"); //Declare array
+         else if (idup.Equals("FUNCTION"))
+            return new Token(TOKEN_DEFFUNC, "FUNCTION");
+         else if (idup.Equals("LET"))
+            return new Token(TOKEN_LET, "LET");
+         else if (idup.Equals("TO"))
+            return new Token(TOKEN_TO, "TO");
+         else if (idup.Equals("FOR"))
+            return new Token(TOKEN_FOR, "FOR"); //For loop, For i To X; next
+         else if (idup.Equals("NEXT"))
+            return new Token(TOKEN_NEXT, "NEXT");
+         else if (idup.Equals("EXIT"))
+            return new Token(TOKEN_EXIT, "EXIT");
+         else if (idup.Equals("PRINT"))
+            return new Token(TOKEN_PRINT, "PRINT");
+         else if (idup.Equals("BEGIN"))
+            return new Token(TOKEN_BEGIN, "BEGIN");
+         else if (idup.Equals("END"))
+            return new Token(TOKEN_END, "END");
+         else if (idup.Equals("PRINTLN"))
+            return new Token(TOKEN_PRINTLN, "PRINTLN");
+         else if (idup.Equals("INTEGER"))
+            return new Token(TOKEN_INTEGER, "INTEGER");
+         else if (idup.Equals("READ"))
+            return new Token(TOKEN_READ, "READ");
+
+         return new Token(TOKEN_IDENTIFIER, id);
+      }
+
+      Token tstring()
+      {
+         StringBuilder s = new StringBuilder();
+         consume();
+         char c = (char)curChar(1);
+         while (curChar(1) != -1 && c != '"')
+         {
+            s.Append(c);
+            consume();
+            c = (char)curChar(1);
+         }
+
+         consume();
+         return new Token(TOKEN_STRING, s.ToString());
+      }
+
+      Token not()
+      {
+         StringBuilder s = new StringBuilder();
+         char c = (char)curChar(1);
+         s.Append(c);
+         consume();
+         c = (char)curChar(1);
+         if (c == '=') // !=
+         {
+            s.Append(c);
+            consume();
+            return new Token(TOKEN_NEQUALS, s.ToString());
+         }
+         else
+            return new Token(TOKEN_NOT, s.ToString()); // '!'
+      }
+
+      Token greater()
+      {
+         StringBuilder s = new StringBuilder();
+         char c = (char)curChar(1);
+         s.Append(c);
+         consume();
+         c = (char)curChar(1);
+         if (c == '=') // >=
+         {
+            s.Append(c);
+            consume();
+            return new Token(TOKEN_GREATEREQ, s.ToString());
+         }
+         else
+            return new Token(TOKEN_GREATER, s.ToString());  // '>'
+      }
+
+      Token less()
+      {
+         StringBuilder s = new StringBuilder();
+         char c = (char)curChar(1);
+         s.Append(c);
+         consume();
+         c = (char)curChar(1);
+         if (c == '=')// <=
+         {
+            s.Append(c);
+            consume();
+            return new Token(TOKEN_LESSEQ, s.ToString());
+         }
+         else
+            return new Token(TOKEN_LESS, s.ToString()); // '<'
+      }
+
+      Token number()
+      {
+         StringBuilder s = new StringBuilder();
+         string stemp;
+         char c = (char)curChar(1);
+         while (char.IsNumber(c) || c == '.')
+         {
+            s.Append(c);
+            consume();
+            c = (char)curChar(1);
+         }
+         stemp = s.ToString();
+
+         if (stemp.IndexOf('.') > 0)
+            return new Token(TOKEN_DOUBLE, stemp.Replace('.', ','));
+         else
+            return new Token(TOKEN_INTEGER, stemp);
+      }
+
+      Token comment()
+      {
+         StringBuilder s = new StringBuilder();
+         match('#');
+         while (curChar(1) != '\n')
+         {
+            s.Append((char)curChar(1));
+            consume();
+         }
+         return new Token(TOKEN_COMMENT, s.ToString());
+      }
+   }
+
+   public class TokenTypes
+   {
+      public const int TOKEN_IDENTIFIER = 1; //Variable identifier
+      public const int TOKEN_BEGIN = 2;
+      public const int TOKEN_END = 3;
+      public const int TOKEN_COMMENT = 4;
+      public const int TOKEN_LBRACK = 5;
+      public const int TOKEN_RBRACK = 6;
+      public const int TOKEN_LPAREN = 7;
+      public const int TOKEN_RPAREN = 8;
+      public const int TOKEN_COMMA = 9;
+      public const int TOKEN_ENDLINE = 10;
+      //CONSTANTS
+      public const int TOKEN_INTEGER = 11;
+      public const int TOKEN_DOUBLE = 12;
+      public const int TOKEN_STRING = 13;
+      public const int TOKEN_BOOLEAN = 14;
+      //SPECIALS
+      public const int TOKEN_PLUS = 20;
+      public const int TOKEN_MINUS = 21;
+      public const int TOKEN_MULT = 22;
+      public const int TOKEN_DIV = 23;
+      public const int TOKEN_EQUALS = 30;
+      public const int TOKEN_NEQUALS = 31;
+      public const int TOKEN_GREATER = 32;
+      public const int TOKEN_GREATEREQ = 33;
+      public const int TOKEN_LESS = 34;
+      public const int TOKEN_LESSEQ = 35;
+      public const int TOKEN_NOT = 36;
+      public const int TOKEN_AND = 37;
+      public const int TOKEN_OR = 38;
+      //CONDITIONALS
+      public const int TOKEN_IF = 39;
+      public const int TOKEN_THEN = 40;
+      public const int TOKEN_ELSE = 41;
+      public const int TOKEN_ENDIF = 42;
+      public const int TOKEN_WHILE = 43;
+      public const int TOKEN_EWHILE = 44;
+      //FUNCTIONS
+      public const int TOKEN_RETURN = 45;
+      public const int TOKEN_DEFFUNC = 46;
+      public const int TOKEN_EDEFFUNC = 47;
+      public const int TOKEN_DEFARRAY = 48;
+      public const int TOKEN_EXIT = 50;
+      public const int TOKEN_FOR = 51;
+      public const int TOKEN_NEXT = 52;
+      public const int TOKEN_READ = 57;
+      public const int TOKEN_PRINTLN = 58;
+      public const int TOKEN_PRINT = 59;
+      public const int TOKEN_LET = 62;
+      public const int TOKEN_DEVICE = 63;
+      public const int TOKEN_TO = 64;
+      public const int TOKEN_SELECT = 65;
+
+      public const int TOKEN_EOF = 9999;
+   }
+
+   public class Token
+   {
+      private string text;
+      private int type;
+
+      public Token(int type, string text)
+      {
+         this.type = type;
+         this.text = text;
+      }
+      public string Text
+      {
+         get { return (text); }
+         set { text = value; }
+      }
+      public int Type
+      {
+         get { return (type); }
+         set { type = value; }
+      }
+   }
+}
